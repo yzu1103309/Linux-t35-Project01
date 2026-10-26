@@ -1,0 +1,82 @@
+Module                  Size  Used by
+binfmt_misc            24576  1
+intel_rapl_msr         20480  0
+intel_rapl_common      40960  1 intel_rapl_msr
+kvm_intel             372736  0
+joydev                 32768  0
+kvm                  1040384  1 kvm_intel
+rapl                   20480  0
+snd_hda_codec_generic   102400  1
+ledtrig_audio          16384  1 snd_hda_codec_generic
+snd_hda_intel          53248  0
+snd_intel_dspcfg       28672  1 snd_hda_intel
+snd_intel_sdw_acpi     20480  1 snd_intel_dspcfg
+snd_hda_codec         163840  2 snd_hda_codec_generic,snd_hda_intel
+input_leds             16384  0
+snd_hda_core          110592  3 snd_hda_codec_generic,snd_hda_intel,snd_hda_codec
+serio_raw              20480  0
+snd_hwdep              16384  1 snd_hda_codec
+snd_pcm               147456  3 snd_hda_intel,snd_hda_codec,snd_hda_core
+snd_timer              40960  1 snd_pcm
+qemu_fw_cfg            20480  0
+snd                   106496  6 snd_hda_codec_generic,snd_hwdep,snd_hda_intel,snd_hda_codec,snd_timer,snd_pcm
+mac_hid                16384  0
+soundcore              16384  1 snd
+sch_fq_codel           20480  2
+dm_multipath           40960  0
+scsi_dh_rdac           20480  0
+scsi_dh_emc            16384  0
+scsi_dh_alua           20480  0
+msr                    16384  0
+efi_pstore             16384  0
+ip_tables              32768  0
+x_tables               53248  1 ip_tables
+autofs4                49152  2
+btrfs                1568768  0
+blake2b_generic        20480  0
+zstd_compress         229376  1 btrfs
+raid10                 69632  0
+raid456               163840  0
+async_raid6_recov      24576  1 raid456
+async_memcpy           20480  2 raid456,async_raid6_recov
+async_pq               24576  2 raid456,async_raid6_recov
+async_xor              20480  3 async_pq,raid456,async_raid6_recov
+async_tx               20480  5 async_pq,async_memcpy,async_xor,raid456,async_raid6_recov
+xor                    24576  2 async_xor,btrfs
+raid6_pq              122880  4 async_pq,btrfs,raid456,async_raid6_recov
+libcrc32c              16384  2 btrfs,raid456
+raid1                  49152  0
+raid0                  24576  0
+multipath              20480  0
+linear                 20480  0
+qxl                    69632  0
+hid_generic            16384  0
+drm_ttm_helper         16384  1 qxl
+ttm                    86016  2 qxl,drm_ttm_helper
+drm_kms_helper        315392  3 qxl
+syscopyarea            16384  1 drm_kms_helper
+crct10dif_pclmul       16384  1
+crc32_pclmul           16384  0
+sysfillrect            20480  1 drm_kms_helper
+ghash_clmulni_intel    16384  0
+cryptd                 24576  1 ghash_clmulni_intel
+sysimgblt              16384  1 drm_kms_helper
+fb_sys_fops            16384  1 drm_kms_helper
+cec                    65536  1 drm_kms_helper
+sha256_ssse3           32768  0
+rc_core                65536  1 cec
+sha1_ssse3             32768  0
+usbhid                 65536  0
+hid                   151552  2 usbhid,hid_generic
+virtio_net             65536  0
+psmouse               184320  0
+ahci                   49152  0
+i2c_i801               36864  0
+libahci                49152  1 ahci
+i2c_smbus              20480  1 i2c_i801
+net_failover           20480  1 virtio_net
+lpc_ich                28672  0
+failover               16384  1 net_failover
+drm                   622592  5 drm_kms_helper,qxl,drm_ttm_helper,ttm
+virtio_rng             16384  0
+virtio_blk             20480  2
