@@ -1,0 +1,142 @@
+name: Build and Release Linux Kernel
+
+# Trigger manually from GitHub Actions -> Run workflow.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-kernel:
+    name: Build Linux 5.15.135 (.deb)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 300
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # GitHub's standard runners have limited disk space. These preinstalled
+      # SDKs are not needed to build an x86-64 Linux kernel.
+      - name: Free runner disk space
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          sudo apt-get clean
+          df -h /
+
+      - name: Install kernel build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc bison flex libssl-dev libelf-dev \
+            dwarves fakeroot rsync kmod cpio dpkg-dev debhelper
+
+      - name: Configure kernel
+        working-directory: linux-5.15.135
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp ../config/kernel.config .config
+
+          # The only version suffix source is this directory's Makefile:
+          #   EXTRAVERSION = -t35-v1
+          # Do not set a second suffix via the .config or CI.
+          scripts/config --set-str LOCALVERSION ""
+          scripts/config --disable LOCALVERSION_AUTO
+
+          # The Ubuntu .config includes Canonical-specific certificate paths
+          # absent from upstream Linux source.
+          scripts/config --set-str SYSTEM_TRUSTED_KEYS ""
+          scripts/config --set-str SYSTEM_REVOCATION_KEYS ""
+
+          # Avoid producing multi-GB debug data on a limited-disk runner.
+          scripts/config --disable DEBUG_INFO
+          scripts/config --disable DEBUG_INFO_BTF
+          scripts/config --disable DEBUG_INFO_BTF_MODULES
+          scripts/config --disable GDB_SCRIPTS
+
+          make olddefconfig
+
+      - name: Read and validate kernel release from Makefile
+        id: version
+        working-directory: linux-5.15.135
+        shell: bash
+        run: |
+          set -euo pipefail
+          release="$(make -s LOCALVERSION= kernelrelease)"
+          printf 'Kernel release: %s\n' "$release"
+
+          # Keep release, package name and uname -r in agreement.
+          if [[ ! "$release" =~ ^5\.15\.135-t35-v[0-9]+$ ]]; then
+            echo "::error::Update linux-5.15.135/Makefile: EXTRAVERSION = -t35-v1 (or -t35-v2, etc.). Actual kernelrelease: $release"
+            exit 1
+          fi
+
+          echo "kernel_release=$release" >> "$GITHUB_OUTPUT"
+          echo "KERNEL_RELEASE=$release" >> "$GITHUB_ENV"
+
+      - name: Reject duplicate release / tag before building
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$KERNEL_RELEASE" >/dev/null 2>&1; then
+            echo "::error::Release $KERNEL_RELEASE already exists. Increment EXTRAVERSION in linux-5.15.135/Makefile."
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$KERNEL_RELEASE" >/dev/null; then
+            echo "::error::Tag $KERNEL_RELEASE already exists. Increment EXTRAVERSION before rebuilding."
+            exit 1
+          fi
+
+      - name: Build .deb packages
+        working-directory: linux-5.15.135
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Setting LOCALVERSION (even to empty) prevents a Git '+' suffix.
+          export LOCALVERSION=""
+          make -j2 LOCALVERSION= bindeb-pkg
+          df -h /
+
+      - name: Collect and verify packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          find . -maxdepth 1 -type f -name '*.deb' -print -exec cp -- '{}' out/ \;
+          if ! compgen -G 'out/linux-image-*.deb' > /dev/null; then
+            echo '::error::No linux-image .deb found.'
+            exit 1
+          fi
+          cp linux-5.15.135/.config out/kernel.config
+          printf '%s\n' "$KERNEL_RELEASE" > out/KERNEL_RELEASE
+          (cd out && sha256sum *.deb kernel.config KERNEL_RELEASE > SHA256SUMS)
+          ls -lh out/
+
+      - name: Upload Actions artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ steps.version.outputs.kernel_release }}-deb
+          path: out/*
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$KERNEL_RELEASE" \
+            out/*.deb out/kernel.config out/KERNEL_RELEASE out/SHA256SUMS \
+            --target "$GITHUB_SHA" \
+            --title "$KERNEL_RELEASE" \
+            --notes "Linux $KERNEL_RELEASE; built from commit $GITHUB_SHA. Install only in the course test VM." \
+            --prerelease
