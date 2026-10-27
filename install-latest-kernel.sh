@@ -1,8 +1,8 @@
-#!/usr/bin/env bash
-# Install the newest t35 Linux kernel release in the Ubuntu course VM.
-# Requires: python3, sudo, apt-get, dpkg-deb; no third-party Python packages.
-set -euo pipefail
-exec python3 - "$@" <<'PY'
+#!/usr/bin/env python3
+"""Install the newest T35 Linux kernel Release in the course VM.
+
+Requires Python 3, sudo and standard Ubuntu package tools; no pip packages.
+"""
 import argparse
 import hashlib
 import json
@@ -65,17 +65,59 @@ def validate_deb(path, package, tag):
     print(f"  Valid package: {name} {version} ({arch})")
 
 
+def prompt_from_terminal():
+    # Read the controlling terminal, even when invoked through a pipe or SSH.
+    try:
+        with open("/dev/tty", "r+") as terminal:
+            terminal.write("Type YES to install: ")
+            terminal.flush()
+            return terminal.readline().strip()
+    except OSError:
+        die("No interactive terminal detected. Re-run with --yes to confirm installation.")
+
+
+def installed_custom_packages(target, running):
+    # Only our versioned image/headers packages. Never touch Ubuntu generic packages.
+    pattern = re.compile(r"^linux-(?:image|headers)-5\.15\.135-t35-v[0-9]+$")
+    result = command("dpkg-query", "-W", "-f=${binary:Package}\t${db:Status-Abbrev}\n", capture=True)
+    remove = []
+    for row in result.stdout.splitlines():
+        parts = row.split("\t", 1)
+        if len(parts) != 2:
+            continue
+        name, status = parts
+        if not status.startswith("ii") or not pattern.fullmatch(name):
+            continue
+        version = name.removeprefix("linux-image-").removeprefix("linux-headers-")
+        if version not in (target, running):
+            remove.append(name)
+    return sorted(remove)
+
+
+def apt_command(*args, cwd=None):
+    # Keep package hooks (debconf / needrestart) interactive for testing.
+    # Python is executed from this file, not via a heredoc, so stdin remains
+    # attached to the SSH/VNC terminal. Do not redirect it to DEVNULL.
+    # Keep sudo -n: sudo -v has already authenticated on the controlling TTY.
+    return subprocess.run(
+        ["sudo", "-n", "env", "DEBIAN_FRONTEND=dialog", "NEEDRESTART_MODE=i",
+         "apt-get", *args],
+        cwd=cwd, check=True,
+    )
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Install latest 5.15.135-t35-vN kernel (including pre-releases).")
+    parser = argparse.ArgumentParser(description="Install latest 5.15.135-t35-vN kernel release.")
     parser.add_argument("--tag", help="Install an explicit release tag, e.g. 5.15.135-t35-v1")
     parser.add_argument("-y", "--yes", action="store_true", help="Skip the final installation prompt")
+    parser.add_argument("--keep-old-custom", action="store_true", help="Do not purge older custom t35 kernels")
     args = parser.parse_args()
 
     if os.geteuid() == 0:
         die("Run this script as a regular user with sudo privileges, not as root.")
     if platform.machine() != "x86_64":
         die(f"Expected x86_64 Ubuntu VM, got {platform.machine()}")
-    if not all(shutil.which(c) for c in ("sudo", "apt-get", "dpkg-deb", "update-grub")):
+    if not all(shutil.which(c) for c in ("sudo", "apt-get", "dpkg-deb", "dpkg-query", "update-grub")):
         die("Requires Ubuntu/Debian tools: sudo, apt-get, dpkg-deb, update-grub")
     try:
         virt = subprocess.run(["systemd-detect-virt", "--vm"], text=True,
@@ -116,10 +158,6 @@ def main():
     print(f"Release URL: https://github.com/{REPO}/releases/tag/{tag}")
     print(f"Packages to install:\n  {image['name']}\n  {headers['name']}")
     print("linux-libc-dev will NOT be installed.")
-    if current == tag:
-        print("\nThe selected kernel is already running; no installation needed.")
-        return
-
     with tempfile.TemporaryDirectory(prefix="t35-kernel-") as directory:
         work = Path(directory)
         chosen = [image, headers, by_name["SHA256SUMS"], by_name["KERNEL_RELEASE"]]
@@ -157,27 +195,47 @@ def main():
 
         if not Path("/boot/grub/grub.cfg").exists():
             die("GRUB config /boot/grub/grub.cfg missing; cannot safely set up boot menu")
-        print("\nWill install the selected kernel; old kernel packages will not be removed.")
+        print("\nWill install/reinstall the selected kernel (including the same version).")
+        print("Ubuntu original kernels will be kept. Running kernel will never be purged.")
         print("VM disk snapshot recommended BEFORE proceeding. Reboot will NOT be automatic.")
         if not args.yes:
-            answer = input("Type YES to install: ")
+            answer = prompt_from_terminal()
             if answer != "YES":
                 print("Cancelled.")
                 return
 
+        # sudo authentication uses the controlling TTY; no sudo prompt is left to apt.
         command("sudo", "-v")
-        command("sudo", "apt-get", "install", "-y", "--no-install-recommends",
-                "./" + image["name"], "./" + headers["name"], cwd=work)
-        command("sudo", "update-grub")
+        apt_command("install", "-y", "--reinstall", "--no-install-recommends",
+                    "./" + image["name"], "./" + headers["name"], cwd=work)
+        command("sudo", "-n", "update-grub")
 
     kernel_image = Path("/boot") / ("vmlinuz-" + tag)
     initrd = Path("/boot") / ("initrd.img-" + tag)
     if not kernel_image.is_file():
         die(f"Install finished but kernel image is missing: {kernel_image}")
     if not initrd.is_file():
-        print(f"WARNING: initramfs not found at {initrd} -- verify before rebooting!", file=sys.stderr)
-    print(f"\nInstalled successfully: {tag}")
-    print("Existing kernels retained. Reboot MANUALLY with Cockpit/noVNC ready:")
+        die(f"Installed kernel lacks initramfs: {initrd}. Older custom kernels were NOT removed.")
+
+    print(f"\nInstalled successfully: {tag} (image and initramfs verified)")
+    if not args.keep_old_custom:
+        stale = installed_custom_packages(tag, current)
+        if stale:
+            print("\nPurging previous t35 kernel packages (excluding running kernel):")
+            for package in stale:
+                print("  " + package)
+            try:
+                apt_command("purge", "-y", *stale)
+                command("sudo", "-n", "update-grub")
+            except subprocess.CalledProcessError:
+                print("WARNING: Old custom kernel cleanup failed; new kernel remains installed.", file=sys.stderr)
+        else:
+            print("No eligible older custom kernel packages to purge.")
+    else:
+        print("Skipping old custom kernel cleanup (--keep-old-custom).")
+    if current != tag and current.startswith("5.15.135-t35-v"):
+        print(f"NOTE: Currently running {current} was preserved. Run installer again after reboot to purge it.")
+    print("Ubuntu original kernels retained. Reboot MANUALLY with Cockpit/noVNC ready:")
     print("  sudo reboot")
     print("After reboot, check:")
     print("  uname -r")
@@ -190,4 +248,3 @@ try:
 except (RuntimeError, urllib.error.URLError, subprocess.CalledProcessError, OSError, ValueError, EOFError) as error:
     print(f"ERROR: {error}", file=sys.stderr)
     sys.exit(1)
-PY

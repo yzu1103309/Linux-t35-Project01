@@ -17,17 +17,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # GitHub's standard runners have limited disk space. These preinstalled
-      # SDKs are not needed to build an x86-64 Linux kernel.
-      - name: Free runner disk space
-        shell: bash
-        run: |
-          set -euo pipefail
-          df -h /
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
-          sudo apt-get clean
-          df -h /
-
       - name: Install kernel build dependencies
         shell: bash
         run: |
@@ -81,21 +70,6 @@ jobs:
           echo "kernel_release=$release" >> "$GITHUB_OUTPUT"
           echo "KERNEL_RELEASE=$release" >> "$GITHUB_ENV"
 
-      - name: Reject duplicate release / tag before building
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          if gh release view "$KERNEL_RELEASE" >/dev/null 2>&1; then
-            echo "::error::Release $KERNEL_RELEASE already exists. Increment EXTRAVERSION in linux-5.15.135/Makefile."
-            exit 1
-          fi
-          if git ls-remote --exit-code --tags origin "refs/tags/$KERNEL_RELEASE" >/dev/null; then
-            echo "::error::Tag $KERNEL_RELEASE already exists. Increment EXTRAVERSION before rebuilding."
-            exit 1
-          fi
-
       - name: Build .deb packages
         working-directory: linux-5.15.135
         shell: bash
@@ -128,15 +102,36 @@ jobs:
           path: out/*
           if-no-files-found: error
 
-      - name: Create GitHub Release
+      - name: Publish or overwrite GitHub Release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release create "$KERNEL_RELEASE" \
-            out/*.deb out/kernel.config out/KERNEL_RELEASE out/SHA256SUMS \
-            --target "$GITHUB_SHA" \
-            --title "$KERNEL_RELEASE" \
-            --notes "Linux $KERNEL_RELEASE; built from commit $GITHUB_SHA. Install only in the course test VM." \
-            --prerelease
+          # Keep an existing version tag aligned with this workflow's commit.
+          # Reusing a version is intended for development builds only.
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f "$KERNEL_RELEASE" "$GITHUB_SHA"
+          git push --force origin "refs/tags/$KERNEL_RELEASE"
+
+          notes="Linux $KERNEL_RELEASE; built from commit $GITHUB_SHA. Install only in the course test VM."
+          if gh release view "$KERNEL_RELEASE" >/dev/null 2>&1; then
+            # Existing release: publish as normal release, then replace assets.
+            gh release edit "$KERNEL_RELEASE" \
+              --title "$KERNEL_RELEASE" --notes "$notes" \
+              --prerelease=false --draft=false
+
+            # Avoid stale .deb assets from an earlier build with the same tag.
+            mapfile -t existing < <(gh release view "$KERNEL_RELEASE" \
+              --json assets --jq '.assets[].name')
+            for asset in "${existing[@]}"; do
+              gh release delete-asset "$KERNEL_RELEASE" "$asset" --yes
+            done
+            gh release upload "$KERNEL_RELEASE" \
+              out/*.deb out/kernel.config out/KERNEL_RELEASE out/SHA256SUMS
+          else
+            gh release create "$KERNEL_RELEASE" \
+              out/*.deb out/kernel.config out/KERNEL_RELEASE out/SHA256SUMS \
+              --verify-tag --title "$KERNEL_RELEASE" --notes "$notes"
+          fi
