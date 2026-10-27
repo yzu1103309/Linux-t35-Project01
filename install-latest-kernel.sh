@@ -66,14 +66,31 @@ def validate_deb(path, package, tag):
 
 
 def prompt_from_terminal():
-    # Read the controlling terminal, even when invoked through a pipe or SSH.
+    """Prompt on an available interactive terminal, without requiring /dev/tty.
+
+    Some web terminals provide interactive stdin but no controlling TTY.
+    Prefer normal stdin when it is a TTY; then try /dev/tty if available.
+    Never silently approve installation in a noninteractive session.
+    """
+    if sys.stdin.isatty():
+        return input("Type YES to install: ").strip()
+
     try:
         with open("/dev/tty", "r+") as terminal:
             terminal.write("Type YES to install: ")
             terminal.flush()
             return terminal.readline().strip()
     except OSError:
-        die("No interactive terminal detected. Re-run with --yes to confirm installation.")
+        pass
+
+    # A web SSH terminal may lack a controlling TTY while still forwarding
+    # usable stdin (isatty=False). This also supports: printf 'YES\n' | script.
+    print("Type YES to install: ", end="", flush=True)
+    answer = sys.stdin.readline()
+    if not answer:
+        die("No input available. Run in an interactive terminal, or pass --yes. "
+            "For SSH remote commands use ssh -tt; for a pipe use printf 'YES\\n' | python3 script.py.")
+    return answer.strip()
 
 
 def installed_custom_packages(target, running):
