@@ -102,36 +102,30 @@ jobs:
           path: out/*
           if-no-files-found: error
 
-      - name: Publish or overwrite GitHub Release
+      - name: Create or Update GitHub Release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # Keep an existing version tag aligned with this workflow's commit.
-          # Reusing a version is intended for development builds only.
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -f "$KERNEL_RELEASE" "$GITHUB_SHA"
-          git push --force origin "refs/tags/$KERNEL_RELEASE"
-
-          notes="Linux $KERNEL_RELEASE; built from commit $GITHUB_SHA. Install only in the testing VM."
+      
           if gh release view "$KERNEL_RELEASE" >/dev/null 2>&1; then
-            # Existing release: publish as normal release, then replace assets.
-            gh release edit "$KERNEL_RELEASE" \
-              --title "$KERNEL_RELEASE" --notes "$notes" \
-              --prerelease=false --draft=false
-
-            # Avoid stale .deb assets from an earlier build with the same tag.
-            mapfile -t existing < <(gh release view "$KERNEL_RELEASE" \
-              --json assets --jq '.assets[].name')
-            for asset in "${existing[@]}"; do
-              gh release delete-asset "$KERNEL_RELEASE" "$asset" --yes
-            done
+            echo "Updating existing release: $KERNEL_RELEASE"
+      
             gh release upload "$KERNEL_RELEASE" \
-              out/*.deb out/kernel.config out/KERNEL_RELEASE out/SHA256SUMS
+              out/*.deb out/kernel.config out/KERNEL_RELEASE out/SHA256SUMS \
+              --clobber
+      
+            gh release edit "$KERNEL_RELEASE" \
+              --title "$KERNEL_RELEASE" \
+              --notes "Linux $KERNEL_RELEASE; rebuilt from commit $GITHUB_SHA." \
+              --prerelease=false
           else
+            echo "Creating new release: $KERNEL_RELEASE"
+      
             gh release create "$KERNEL_RELEASE" \
               out/*.deb out/kernel.config out/KERNEL_RELEASE out/SHA256SUMS \
-              --verify-tag --title "$KERNEL_RELEASE" --notes "$notes"
+              --target "$GITHUB_SHA" \
+              --title "$KERNEL_RELEASE" \
+              --notes "Linux $KERNEL_RELEASE; built from commit $GITHUB_SHA."
           fi
