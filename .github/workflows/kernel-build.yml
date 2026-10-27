@@ -115,7 +115,7 @@ jobs:
           git tag -f "$KERNEL_RELEASE" "$GITHUB_SHA"
           git push --force origin "refs/tags/$KERNEL_RELEASE"
 
-          notes="Linux $KERNEL_RELEASE; built from commit $GITHUB_SHA. Install only in the course test VM."
+          notes="Linux $KERNEL_RELEASE; built from commit $GITHUB_SHA. Install only in the testing VM."
           if gh release view "$KERNEL_RELEASE" >/dev/null 2>&1; then
             # Existing release: publish as normal release, then replace assets.
             gh release edit "$KERNEL_RELEASE" \
