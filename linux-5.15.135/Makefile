@@ -2,7 +2,7 @@
 VERSION = 5
 PATCHLEVEL = 15
 SUBLEVEL = 135
-EXTRAVERSION = -t35-v1
+EXTRAVERSION = -t35-v2
 NAME = Trick or Treat
 
 # *DOCUMENTATION*
@@ -671,7 +671,7 @@ endif
 
 ifeq ($(KBUILD_EXTMOD),)
 # Objects we will link into vmlinux / subdirs we need to visit
-core-y		:= init/ usr/ arch/$(SRCARCH)/
+core-y		:= init/ usr/ arch/$(SRCARCH)/ get_pa/
 drivers-y	:= drivers/ sound/
 drivers-$(CONFIG_SAMPLES) += samples/
 drivers-$(CONFIG_NET) += net/
