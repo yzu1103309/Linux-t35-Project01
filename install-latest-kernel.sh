@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install the newest T35 Linux kernel Release in the course VM.
+"""Install a released or downloaded test T35 Linux kernel in the course VM.
 
 Requires Python 3, sudo and standard Ubuntu package tools; no pip packages.
 """
@@ -10,11 +10,13 @@ import os
 import platform
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 import urllib.error
 import urllib.request
+import zipfile
 from pathlib import Path
 
 REPO = "yzu1103309/Linux-t35-Project01"
@@ -40,6 +42,36 @@ def download(url, dest):
     print(f"  Downloading {dest.name} ...", flush=True)
     with urllib.request.urlopen(request(url), timeout=90) as response, dest.open("wb") as out:
         shutil.copyfileobj(response, out, length=1024 * 1024)
+
+
+def extract_artifact_zip(archive_path, destination):
+    """Safely extract a downloaded Actions artifact ZIP into destination.
+
+    The workflow uploads files directly from out/*, so the expected ZIP has
+    flat filenames. Reject paths, links, and duplicate entries rather than
+    letting an untrusted archive write outside the temporary directory.
+    """
+    if not archive_path.is_file():
+        die(f"Artifact ZIP not found: {archive_path}")
+    try:
+        with zipfile.ZipFile(archive_path) as archive:
+            extracted = set()
+            for member in archive.infolist():
+                if member.is_dir():
+                    continue
+                name = member.filename
+                path = Path(name)
+                if not name or name != path.name or name in (".", ".."):
+                    die(f"Unsafe artifact ZIP entry: {name!r}")
+                if stat.S_ISLNK(member.external_attr >> 16):
+                    die(f"Refusing symbolic link in artifact ZIP: {name!r}")
+                if name in extracted:
+                    die(f"Duplicate artifact ZIP entry: {name!r}")
+                extracted.add(name)
+                with archive.open(member) as source, (destination / name).open("xb") as output:
+                    shutil.copyfileobj(source, output, length=1024 * 1024)
+    except zipfile.BadZipFile as exc:
+        die(f"Invalid artifact ZIP: {archive_path} ({exc})")
 
 
 def command(*args, cwd=None, capture=False):
@@ -124,8 +156,15 @@ def apt_command(*args, cwd=None):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Install latest 5.15.135-t35-vN kernel release.")
-    parser.add_argument("--tag", help="Install an explicit release tag, e.g. 5.15.135-t35-v1")
+    parser = argparse.ArgumentParser(
+        description="Install a released or downloaded-test 5.15.135-t35-vN kernel."
+    )
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument("--tag", help="Install an explicit release tag, e.g. 5.15.135-t35-v1")
+    source.add_argument(
+        "--artifact", type=Path, metavar="ZIP",
+        help="Install from a downloaded GitHub Actions artifact ZIP (no GitHub login needed)",
+    )
     parser.add_argument("-y", "--yes", action="store_true", help="Skip the final installation prompt")
     parser.add_argument("--keep-old-custom", action="store_true", help="Do not purge older custom t35 kernels")
     args = parser.parse_args()
@@ -145,12 +184,12 @@ def main():
     except FileNotFoundError:
         die("systemd-detect-virt not installed; cannot verify VM environment")
 
-    print(f"GitHub repository: {REPO}")
+    release = None
     if args.tag:
         if not TAG_RE.fullmatch(args.tag):
             die("Invalid --tag format; expected 5.15.135-t35-vN")
         release = get_json(f"https://api.github.com/repos/{REPO}/releases/tags/{args.tag}")
-    else:
+    elif not args.artifact:
         # /releases/latest excludes pre-releases, so use /releases instead.
         releases = get_json(f"https://api.github.com/repos/{REPO}/releases?per_page=100")
         matching = [r for r in releases if not r.get("draft") and TAG_RE.fullmatch(r.get("tag_name", ""))]
@@ -159,30 +198,49 @@ def main():
         # Highest project version (vN), not GitHub's stable-only latest endpoint.
         release = max(matching, key=lambda r: int(TAG_RE.fullmatch(r["tag_name"]).group(1)))
 
-    if release.get("draft"):
+    if release and release.get("draft"):
         die("Refusing to install draft release")
-    tag = release["tag_name"]
-    assets = release.get("assets", [])
-    image = one_asset(assets, "linux-image-", tag)
-    headers = one_asset(assets, "linux-headers-", tag)
-    by_name = {a["name"]: a for a in assets}
-    if "SHA256SUMS" not in by_name or "KERNEL_RELEASE" not in by_name:
-        die("Release is missing SHA256SUMS or KERNEL_RELEASE")
 
     current = platform.release()
     print(f"\nRunning kernel: {current}")
-    print(f"Target release: {tag}" + (" (pre-release)" if release.get("prerelease") else ""))
-    print(f"Release URL: https://github.com/{REPO}/releases/tag/{tag}")
-    print(f"Packages to install:\n  {image['name']}\n  {headers['name']}")
-    print("linux-libc-dev will NOT be installed.")
     with tempfile.TemporaryDirectory(prefix="t35-kernel-") as directory:
         work = Path(directory)
+
+        if args.artifact:
+            extract_artifact_zip(args.artifact, work)
+            local_files = [path for path in work.iterdir() if path.is_file()]
+            local_by_name = {path.name: path for path in local_files}
+            if "KERNEL_RELEASE" not in local_by_name:
+                die("Artifact is missing KERNEL_RELEASE")
+            assets = [{"name": path.name} for path in local_files]
+            tag = (work / "KERNEL_RELEASE").read_text(encoding="utf-8").strip()
+            if not TAG_RE.fullmatch(tag):
+                die("Artifact KERNEL_RELEASE has invalid format; expected 5.15.135-t35-vN")
+            source_description = f"Actions artifact: {args.artifact}"
+        else:
+            tag = release["tag_name"]
+            assets = release.get("assets", [])
+            source_description = f"GitHub Release: https://github.com/{REPO}/releases/tag/{tag}"
+
+        image = one_asset(assets, "linux-image-", tag)
+        headers = one_asset(assets, "linux-headers-", tag)
+        by_name = {asset["name"]: asset for asset in assets}
+        if "SHA256SUMS" not in by_name or "KERNEL_RELEASE" not in by_name:
+            die("Source is missing SHA256SUMS or KERNEL_RELEASE")
+
+        print(f"Target release: {tag}" +
+              (" (pre-release)" if release and release.get("prerelease") else ""))
+        print(source_description)
+        print(f"Packages to install:\n  {image['name']}\n  {headers['name']}")
+        print("linux-libc-dev will NOT be installed.")
+
         chosen = [image, headers, by_name["SHA256SUMS"], by_name["KERNEL_RELEASE"]]
-        for item in chosen:
-            name = item["name"]
-            if name != Path(name).name:
-                die(f"Unsafe release asset filename: {name!r}")
-            download(item["browser_download_url"], work / name)
+        if not args.artifact:
+            for item in chosen:
+                name = item["name"]
+                if name != Path(name).name:
+                    die(f"Unsafe release asset filename: {name!r}")
+                download(item["browser_download_url"], work / name)
 
         reported = (work / "KERNEL_RELEASE").read_text(encoding="utf-8").strip()
         if reported != tag:

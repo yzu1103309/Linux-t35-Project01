@@ -1,17 +1,27 @@
-name: Build and Release Linux Kernel
+name: Build Linux Kernel (optional release)
 
 # Trigger manually from GitHub Actions -> Run workflow.
+# Builds are test artifacts by default. Publishing a public release requires
+# the explicit opt-in below.
 on:
   workflow_dispatch:
+    inputs:
+      publish_release:
+        description: 'Publish this build as an immutable GitHub Release'
+        required: true
+        default: false
+        type: boolean
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build-kernel:
     name: Build Linux 5.15.135 (.deb)
     runs-on: ubuntu-22.04
     timeout-minutes: 300
+    outputs:
+      kernel_release: ${{ steps.version.outputs.kernel_release }}
 
     steps:
       - name: Checkout repository
@@ -101,31 +111,44 @@ jobs:
           name: linux-${{ steps.version.outputs.kernel_release }}-deb
           path: out/*
           if-no-files-found: error
+          # Test builds are retrieved from the Actions run, not Releases.
+          retention-days: 14
 
-      - name: Create or Update GitHub Release
+  publish-release:
+    name: Publish immutable GitHub Release
+    needs: build-kernel
+    # A normal Run workflow invocation ends after the artifact upload.
+    if: ${{ inputs.publish_release }}
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download release files
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-${{ needs.build-kernel.outputs.kernel_release }}-deb
+          path: out
+
+      - name: Publish new GitHub Release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          KERNEL_RELEASE: ${{ needs.build-kernel.outputs.kernel_release }}
         run: |
           set -euo pipefail
-      
+          notes="Linux $KERNEL_RELEASE; built from commit $GITHUB_SHA. Install only in the course test VM."
           if gh release view "$KERNEL_RELEASE" >/dev/null 2>&1; then
-            echo "Updating existing release: $KERNEL_RELEASE"
-      
-            gh release upload "$KERNEL_RELEASE" \
-              out/*.deb out/kernel.config out/KERNEL_RELEASE out/SHA256SUMS \
-              --clobber
-      
-            gh release edit "$KERNEL_RELEASE" \
-              --title "$KERNEL_RELEASE" \
-              --notes "Linux $KERNEL_RELEASE; rebuilt from commit $GITHUB_SHA." \
-              --prerelease=false
-          else
-            echo "Creating new release: $KERNEL_RELEASE"
-      
-            gh release create "$KERNEL_RELEASE" \
-              out/*.deb out/kernel.config out/KERNEL_RELEASE out/SHA256SUMS \
-              --target "$GITHUB_SHA" \
-              --title "$KERNEL_RELEASE" \
-              --notes "Linux $KERNEL_RELEASE; built from commit $GITHUB_SHA."
+            echo "::error::Release $KERNEL_RELEASE already exists and is immutable. Bump EXTRAVERSION before publishing."
+            exit 1
           fi
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$KERNEL_RELEASE" >/dev/null 2>&1; then
+            echo "::error::Tag $KERNEL_RELEASE already exists. Bump EXTRAVERSION before publishing."
+            exit 1
+          fi
+
+          # gh creates the version tag at the exact commit built by this run.
+          # Never force-push a tag or replace assets in an existing release.
+          gh release create "$KERNEL_RELEASE" \
+            out/*.deb out/kernel.config out/KERNEL_RELEASE out/SHA256SUMS \
+            --target "$GITHUB_SHA" --title "$KERNEL_RELEASE" --notes "$notes"
