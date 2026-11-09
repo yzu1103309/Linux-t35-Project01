@@ -2,8 +2,8 @@
 VERSION = 5
 PATCHLEVEL = 15
 SUBLEVEL = 135
-EXTRAVERSION = -t35-v2
-NAME = Trick or Treat
+EXTRAVERSION = -t35-v5
+NAME = Pj1 Final Version
 
 # *DOCUMENTATION*
 # To see a list of typical targets execute "make help"
