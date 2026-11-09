@@ -1,0 +1,5 @@
+.idea
+AGENTS.md
+
+# Local out-of-tree kernel builds and installer-compatible artifacts.
+.local-build/
