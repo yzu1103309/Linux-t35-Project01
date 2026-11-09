@@ -74,6 +74,7 @@ SYSCALL_DEFINE1(get_pa, void __user *, uvaddr)
 
 	pte = pte_offset_map_lock(mm, pmd, vaddr, &ptl);
 	if (!pte)
+		pte_unmap_unlock(pte, ptl);
 		goto out;
 	if (pte_present(*pte)) {
 		pfn = pte_pfn(*pte);
