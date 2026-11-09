@@ -34,7 +34,25 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential bc bison flex libssl-dev libelf-dev \
-            dwarves fakeroot rsync kmod cpio dpkg-dev debhelper
+            dwarves fakeroot rsync kmod cpio dpkg-dev debhelper ccache
+
+      # GitHub-hosted runners are ephemeral. Cache compiler results instead of
+      # the whole Kbuild output tree, whose timestamps are not reliable after
+      # checkout and restore. A cache miss only makes this run slower.
+      - name: Cache kernel compiler results
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-${{ runner.os }}-linux-5.15.135-${{ hashFiles('config/kernel.config', 'linux-5.15.135/Makefile') }}
+          restore-keys: |
+            ccache-${{ runner.os }}-linux-5.15.135-
+
+      - name: Configure compiler cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          ccache --max-size=2G
+          ccache --zero-stats
 
       - name: Configure kernel
         working-directory: linux-5.15.135
@@ -87,7 +105,8 @@ jobs:
           set -euo pipefail
           # Setting LOCALVERSION (even to empty) prevents a Git '+' suffix.
           export LOCALVERSION=""
-          make -j2 LOCALVERSION= bindeb-pkg
+          make -j2 CC="ccache gcc" LOCALVERSION= bindeb-pkg
+          ccache --show-stats
           df -h /
 
       - name: Collect and verify packages
